@@ -1,0 +1,75 @@
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: telemetria
+      POSTGRES_PASSWORD: telemetria
+      POSTGRES_DB: telemetria
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - telemetria-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U telemetria -d telemetria"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: telemetria
+      RABBITMQ_DEFAULT_PASS: telemetria
+    ports:
+      - "15672:15672"  # UI de gerenciamento
+    networks:
+      - telemetria-net
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      target: backend
+    environment:
+      AMQP_URL: amqp://telemetria:telemetria@rabbitmq:5672/
+      PORT: 8080
+    ports:
+      - "8080:8080"
+    networks:
+      - telemetria-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+
+  consumer:
+    build:
+      context: ./backend
+      target: consumer
+    environment:
+      AMQP_URL: amqp://telemetria:telemetria@rabbitmq:5672/
+      DATABASE_URL: postgres://telemetria:telemetria@postgres:5432/telemetria?sslmode=disable
+    networks:
+      - telemetria-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+
+networks:
+  telemetria-net:
+    driver: bridge
