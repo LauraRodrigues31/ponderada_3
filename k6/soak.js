@@ -1,37 +1,41 @@
 /**
- * Load Test — carga esperada em produção
+ * Soak Test — resistência prolongada
  *
- * Objetivo: simular o tráfego normal de dispositivos IoT enviando
- * telemetria periodicamente. Serve como baseline para comparar com
- * os testes de stress e spike.
+ * Objetivo: manter carga moderada por um período longo para detectar
+ * vazamentos de memória, degradação gradual de latência, acúmulo na
+ * fila RabbitMQ ou aumento de conexões abertas no PostgreSQL.
  *
- * Perfil: rampa até 50 VUs (simula 50 dispositivos simultâneos),
- * sustenta por 3 minutos e desce.
+ * Perfil: 20 VUs por 10 minutos (ajustável via env SOAK_DURATION).
+ * Em ambiente de CI use SOAK_DURATION=2m; em staging, 30m ou mais.
  *
- * Executar: k6 run k6/load_test.js
+ * Executar:
+ *   k6 run k6/soak.js
+ *   k6 run -e SOAK_DURATION=30m k6/soak.js
  */
 import http from "k6/http";
 import { check, sleep } from "k6";
 import { Rate, Trend } from "k6/metrics";
 
 const taxaErros    = new Rate("taxa_erros");
-const latenciaPost = new Trend("latencia_post_ms", true);
+const latenciaTend = new Trend("latencia_tendencia_ms", true);
+
+const DURACAO = __ENV.SOAK_DURATION || "10m";
 
 export const options = {
   stages: [
-    { duration: "30s", target: 20 },  // ramp-up gradual
-    { duration: "3m",  target: 50 },  // carga de produção
-    { duration: "30s", target: 0  },  // ramp-down
+    { duration: "1m",     target: 20 },  // ramp-up
+    { duration: DURACAO,  target: 20 },  // sustentação
+    { duration: "30s",    target: 0  },  // ramp-down
   ],
   thresholds: {
-    http_req_duration: ["p(95)<500"],  // 95% das requisições abaixo de 500 ms
-    http_req_failed:   ["rate<0.01"],  // menos de 1% de erros
+    // latência não deve degradar: p(95) abaixo de 800 ms durante toda a execução
+    http_req_duration: ["p(95)<800"],
+    // menos de 1% de erros
     taxa_erros:        ["rate<0.01"],
   },
 };
 
 const BASE_URL = __ENV.BASE_URL || "http://localhost:8080";
-
 const SENSORES = ["temperatura", "pressao", "umidade", "vibracao", "corrente"];
 const LEITURAS = ["analog", "discrete"];
 
@@ -40,10 +44,9 @@ function pick(arr)       { return arr[Math.floor(Math.random() * arr.length)]; }
 
 export default function () {
   const tipoLeitura = pick(LEITURAS);
-  const deviceId    = `device-${Math.floor(rand(1, 50))}`;
 
   const payload = JSON.stringify({
-    device_id:    deviceId,
+    device_id:    `soak-device-${Math.floor(rand(1, 50))}`,
     timestamp:    new Date().toISOString(),
     sensor_type:  pick(SENSORES),
     reading_type: tipoLeitura,
@@ -56,12 +59,12 @@ export default function () {
     headers: { "Content-Type": "application/json" },
   });
 
-  latenciaPost.add(res.timings.duration);
+  latenciaTend.add(res.timings.duration);
 
   const ok = check(res, {
     "status 202": (r) => r.status === 202,
   });
   taxaErros.add(!ok);
 
-  sleep(0.1); // 100 ms entre requisições por VU
+  sleep(0.5); // 500 ms entre requests: simula dispositivos IoT reais
 }
