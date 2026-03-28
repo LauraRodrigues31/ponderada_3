@@ -1,0 +1,14 @@
+# PlatformIO
+firmware/.pio/
+firmware/.vscode/
+firmware/build/
+
+# MicroPython (remover se sobrou)
+*.mpy
+.wokwi/
+config_local.py
+.DS_Store
+
+.claude
+
+venv
